@@ -18,8 +18,64 @@
 | RandomLoadBalance | 随机算法，根据权重设置随机的概率 |
 | ConsistentHashLoadBalance | Hash 一致性算法，相同请求参数分配到相同提供者 |
 
-#### RoundRobinLoadBalance （轮询算法）
-  
+#### RoundRobinLoadBalance （加权轮询算法）
+> `Dubbo`中使用了加权轮询算法进行负载均衡的实现，通过该算法可以巧妙的实现动态加权轮询。
+
+主要由以下步骤去完成加权轮询算法的实现：
+1. 初始化本地权重表，根据情况动态调整
+2. 每次动态的更新本地权重表，更新算法为当前invoker的权重+本地权重表的old值
+3. 选取本地权重最大的invoker，并将其本地权重表的权重-本轮所有invoker的权重和，并返回当前的invoker
+
+代码部分： `org.apache.dubbo.rpc.cluster.loadbalance.RoundRobinLoadBalance`
+
+```java
+protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation invocation) {
+        // key = service + method 
+        String key = invokers.get(0).getUrl().getServiceKey() + "." + invocation.getMethodName();
+        ConcurrentMap<String, WeightedRoundRobin> map = methodWeightMap.computeIfAbsent(key, k -> new ConcurrentHashMap<>());
+        int totalWeight = 0;
+        long maxCurrent = Long.MIN_VALUE;
+        long now = System.currentTimeMillis();
+        Invoker<T> selectedInvoker = null;
+        WeightedRoundRobin selectedWRR = null;
+        for (Invoker<T> invoker : invokers) {
+            String identifyString = invoker.getUrl().toIdentityString();
+            // 获取当前invoker的权重
+            int weight = getWeight(invoker, invocation);
+            WeightedRoundRobin weightedRoundRobin = map.computeIfAbsent(identifyString, k -> {
+                WeightedRoundRobin wrr = new WeightedRoundRobin();
+                wrr.setWeight(weight);
+                return wrr;
+            });
+
+            if (weight != weightedRoundRobin.getWeight()) {
+                //weight changed
+                weightedRoundRobin.setWeight(weight);
+            }
+            long cur = weightedRoundRobin.increaseCurrent();
+            weightedRoundRobin.setLastUpdate(now);
+            if (cur > maxCurrent) {
+                maxCurrent = cur;
+                selectedInvoker = invoker;
+                selectedWRR = weightedRoundRobin;
+            }
+            totalWeight += weight;
+        }
+        if (invokers.size() != map.size()) {
+            map.entrySet().removeIf(item -> now - item.getValue().getLastUpdate() > RECYCLE_PERIOD);
+        }
+        if (selectedInvoker != null) {
+            selectedWRR.sel(totalWeight);
+            return selectedInvoker;
+        }
+        // should not happen here
+        return invokers.get(0);
+    }
+```
+
+
+
+
 #### RandomLoadBalance（随机算法）
   
 #### ConsistentHashLoadBalance（一致性哈希算法）
