@@ -47,11 +47,12 @@ protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation
                 wrr.setWeight(weight);
                 return wrr;
             });
-
+            // 权重发生变化 更新权重
             if (weight != weightedRoundRobin.getWeight()) {
                 //weight changed
                 weightedRoundRobin.setWeight(weight);
             }
+            // current+=weight
             long cur = weightedRoundRobin.increaseCurrent();
             weightedRoundRobin.setLastUpdate(now);
             if (cur > maxCurrent) {
@@ -62,6 +63,7 @@ protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation
             totalWeight += weight;
         }
         if (invokers.size() != map.size()) {
+            // 移除长时间未更新的节点
             map.entrySet().removeIf(item -> now - item.getValue().getLastUpdate() > RECYCLE_PERIOD);
         }
         if (selectedInvoker != null) {
@@ -73,6 +75,11 @@ protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation
     }
 ```
 
+举例： 三个提供方：a，b，c的权重分别为3，6，1
+|   |   |a  |b  |c  |
+| --- | --- |--- |--- |--- |
+|  | 原始权重 | 3 | 6|1|
+|所有权重 + 原始权重，本轮权重总和 = 20||6|12|2|
 
 
 
