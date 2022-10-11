@@ -158,6 +158,8 @@ protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation
 代码部分： `org.apache.dubbo.rpc.cluster.loadbalance.ConsistentHashLoadBalance`
 
 ```java
+   .......
+   
    @Override
     protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation invocation) {
         String methodName = RpcUtils.getMethodName(invocation);
@@ -203,8 +205,9 @@ protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation
                 }
             }
         }
-
+        // 选择 Invoker
         public Invoker<T> select(Invocation invocation) {
+            //选择 参数作为key
             String key = toKey(invocation.getArguments());
             byte[] digest = Bytes.getMD5(key);
             return selectForKey(hash(digest, 0));
@@ -222,19 +225,15 @@ protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation
 
         private Invoker<T> selectForKey(long hash) {
             Map.Entry<Long, Invoker<T>> entry = virtualInvokers.ceilingEntry(hash);
+            // 如未获取到 默认选择第一个Invoker返回
             if (entry == null) {
                 entry = virtualInvokers.firstEntry();
             }
             return entry.getValue();
         }
+        
+     .......
 
-        private long hash(byte[] digest, int number) {
-            return (((long) (digest[3 + number * 4] & 0xFF) << 24)
-                    | ((long) (digest[2 + number * 4] & 0xFF) << 16)
-                    | ((long) (digest[1 + number * 4] & 0xFF) << 8)
-                    | (digest[number * 4] & 0xFF))
-                    & 0xFFFFFFFFL;
-        }
     }
 ```
 
@@ -244,15 +243,17 @@ protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation
 ## 集群容错
 
 ### 概念介绍
+> 服务通常都是以集群的形式部署来保证服务的高可用性。在dubbo远程调用过程中，被调用的远程服务并不是每时刻都保持良好的状态，当某个服务调用出现异常时候（比如网络抖动、服务短暂不可用），都需要进行容错。
 
 ### Dubbo中的集群容错
 
-| 名称  | 说明  |
-| --- | --- |
-| Failover | 加权轮询算法，根据权重设置轮询比例 |
-| Failfast | 随机算法，根据权重设置随机的概率 |
-| Failsafe | Hash 一致性算法，相同请求参数分配到相同提供者 |
-| Broadcast | Hash 一致性算法，相同请求参数分配到相同提供者 |
+| 策略名称|	优点	|缺点	|主要应用场景 |
+| --- | --- |--- |--- |
+| Failover | 对调用者屏蔽调用失败的信息 | 增加RT，额外资源开销，资源浪费｜ 对调用rt不敏感的场景｜
+| Failfast | 业务快速感知失败状态进行自主决策 |产生较多报错的信息 |  非幂等性操作，需要快速感知失败的场景|
+| Failsafe | 即使失败了也不会影响核心流程 |对于失败的信息不敏感，需要额外的监控||旁路系统，失败不影响核心流程正确性的场景|
+| Broadcast | 支持对所有的服务提供者进行操作 |资源消耗很大 | 通知所有提供者更新缓存或日志等本地资源信息|
+	
 
 #### Failover  
 #### Failfast  
