@@ -249,16 +249,110 @@ protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation
 
 | 策略名称|	优点	|缺点	|主要应用场景 |
 | --- | --- |--- |--- |
-| Failover | 对调用者屏蔽调用失败的信息 | 增加RT，额外资源开销，资源浪费｜ 对调用rt不敏感的场景｜
+| Failover | 对调用者屏蔽调用失败的信息 |  增加RT，额外资源开销，资源浪费|  对调用rt不敏感的场景| 
 | Failfast | 业务快速感知失败状态进行自主决策 |产生较多报错的信息 |  非幂等性操作，需要快速感知失败的场景|
 | Failsafe | 即使失败了也不会影响核心流程 |对于失败的信息不敏感，需要额外的监控||旁路系统，失败不影响核心流程正确性的场景|
 | Broadcast | 支持对所有的服务提供者进行操作 |资源消耗很大 | 通知所有提供者更新缓存或日志等本地资源信息|
-	
 
 #### Failover  
-#### Failfast  
+> 调用失败情况下，通过重试策略来帮助本次的请求的正常进行。
+
+代码部分：`org.apache.dubbo.rpc.cluster.support.FailoverClusterInvoker`
+```java
+public Result doInvoke(Invocation invocation, final List<Invoker<T>> invokers, LoadBalance loadbalance) throws RpcException {
+        List<Invoker<T>> copyInvokers = invokers;
+        checkInvokers(copyInvokers, invocation);
+        String methodName = RpcUtils.getMethodName(invocation);
+	// 获取重试次数
+        int len = calculateInvokeTimes(methodName);
+        // retry loop.
+        RpcException le = null; // last exception.
+        List<Invoker<T>> invoked = new ArrayList<Invoker<T>>(copyInvokers.size()); // invoked invokers.
+        Set<String> providers = new HashSet<String>(len);
+        for (int i = 0; i < len; i++) {
+            //Reselect before retry to avoid a change of candidate `invokers`.
+            //NOTE: if `invokers` changed, then `invoked` also lose accuracy.
+            if (i > 0) {
+                checkWhetherDestroyed();
+                copyInvokers = list(invocation);
+                // check again
+                checkInvokers(copyInvokers, invocation);
+            }
+	    // 选择 invoker 排除不可用以及已经选择过的
+            Invoker<T> invoker = select(loadbalance, invocation, copyInvokers, invoked);
+            invoked.add(invoker);
+            RpcContext.getServiceContext().setInvokers((List) invoked);
+            boolean success = false;
+            try {
+	    	// 进行远程调用
+                Result result = invokeWithContext(invoker, invocation);
+                if (le != null && logger.isWarnEnabled()) {
+                    ...warn log...
+                }
+                success = true;
+                return result;
+            } catch (RpcException e) {
+                if (e.isBiz()) { // biz exception.
+                    throw e;
+                }
+                le = e;
+            } catch (Throwable e) {
+                le = new RpcException(e.getMessage(), e);
+            } finally {
+                if (!success) {
+                    providers.add(invoker.getUrl().getAddress());
+                }
+            }
+        }
+        throw new RpcException(....);
+    }
+```
+
+#### Failfast
+> 调用失败则异常返回
+
+代码部分： `org.apache.dubbo.rpc.cluster.support.FailfastClusterInvoker`
+```java
+    public Result doInvoke(Invocation invocation, List<Invoker<T>> invokers, LoadBalance loadbalance) throws RpcException {
+        checkInvokers(invokers, invocation);
+        Invoker<T> invoker = select(loadbalance, invocation, invokers, null);
+        try {
+	    // 远程调用
+            return invokeWithContext(invoker, invocation);
+        } catch (Throwable e) {
+            if (e instanceof RpcException && ((RpcException) e).isBiz()) { // biz exception.
+                throw (RpcException) e;
+            }
+            throw new RpcException(msg);
+        }
+    }
+```
+
 #### Failsafe  
+> 调用失败则空数据返回，不会异常中断
+
+代码部分：`org.apache.dubbo.rpc.cluster.support.FailsafeClusterInvoker`
+```java
+public Result doInvoke(Invocation invocation, List<Invoker<T>> invokers, LoadBalance loadbalance) throws RpcException {
+        try {
+            checkInvokers(invokers, invocation);
+            Invoker<T> invoker = select(loadbalance, invocation, invokers, null);
+            return invokeWithContext(invoker, invocation);
+        } catch (Throwable e) {
+            logger.error(CLUSTER_ERROR_RESPONSE,"Failsafe for provider exception","","Failsafe ignore exception: " + e.getMessage(),e);
+            return AsyncRpcResult.newDefaultAsyncResult(null, null, invocation); // ignore
+        }
+    }
+```
+
+
 #### Broadcast  
+> 
+
+代码部分：
+java
+
+
 #### Demo
 
 ## 路由选址
