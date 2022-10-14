@@ -361,9 +361,9 @@ java
 
 | 名称  | 说明  |
 | --- | --- |
-| Tag | 加权轮询算法，根据权重设置轮询比例 |
-| Condition | 随机算法，根据权重设置随机的概率 |
-| Mesh | Hash 一致性算法，相同请求参数分配到相同提供者 |
+| Tag | Tag |
+| Condition | Condition |
+| Mesh | Mesh |
 
 #### Tag  
 #### Condition  
