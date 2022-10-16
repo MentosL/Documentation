@@ -472,14 +472,14 @@ public BitList<Invoker<T>> doRoute(BitList<Invoker<T>> invokers, URL url, Invoca
                 // 配置地址为空 则采用静态 Tag过滤
                 result = filterInvoker(invokers, invoker -> tag.equals(invoker.getUrl().getParameter(TAG_KEY)));
             }
-            // 
+            // 结果集合不为空 或 强制采用Tag标签路由 直接返回
             if (CollectionUtils.isNotEmpty(result) || isForceUseTag(invocation)) {
                 if (needToPrintMessage) {
                     messageHolder.set("Use tag " + tag + " to route. Reason: result is not empty or ForceUseTag key is true in invocation");
                 }
                 return result;
             }
-            // FAILOVER: return all Providers without any tags.
+            // 返回不通过tag标签判断，通过地址过滤的所有invoker 
             else {
                 BitList<Invoker<T>> tmp = filterInvoker(invokers, invoker -> addressNotMatches(invoker.getUrl(),
                     tagRouterRuleCopy.getAddresses()));
@@ -489,24 +489,22 @@ public BitList<Invoker<T>> doRoute(BitList<Invoker<T>> invokers, URL url, Invoca
                 return filterInvoker(tmp, invoker -> StringUtils.isEmpty(invoker.getUrl().getParameter(TAG_KEY)));
             }
         } else {
-            // List<String> addresses = tagRouterRule.filter(providerApp);
-            // return all addresses in dynamic tag group.
+            // 通过地址判断
             List<String> addresses = tagRouterRuleCopy.getAddresses();
             if (CollectionUtils.isNotEmpty(addresses)) {
                 result = filterInvoker(invokers, invoker -> addressNotMatches(invoker.getUrl(), addresses));
-                // 1. all addresses are in dynamic tag group, return empty list.
                 if (CollectionUtils.isEmpty(result)) {
                     if (needToPrintMessage) {
                         messageHolder.set("all addresses are in dynamic tag group, return empty list");
                     }
+		    // 通过地址判断返回结果集
                     return result;
                 }
-                // 2. if there are some addresses that are not in any dynamic tag group, continue to filter using the
-                // static tag group.
             }
             if (needToPrintMessage) {
                 messageHolder.set("filter using the static tag group");
             }
+	    // 继续使用静态标签过滤
             return filterInvoker(result, invoker -> {
                 String localTag = invoker.getUrl().getParameter(TAG_KEY);
                 return StringUtils.isEmpty(localTag) || !tagRouterRuleCopy.getTagNames().contains(localTag);
@@ -514,6 +512,66 @@ public BitList<Invoker<T>> doRoute(BitList<Invoker<T>> invokers, URL url, Invoca
         }
     }
 ```
-
 #### Condition  
+> 通过规则条件的配置进行路由。
+
+代码：`org.apache.dubbo.rpc.cluster.router.condition.ConditionStateRouter`
+```java
+protected BitList<Invoker<T>> doRoute(BitList<Invoker<T>> invokers, URL url, Invocation invocation,
+                                          boolean needToPrintMessage, Holder<RouterSnapshotNode<T>> nodeHolder,
+                                          Holder<String> messageHolder) throws RpcException {
+        if (!enabled) { // 判断condition开关状态
+            if (needToPrintMessage) {
+                messageHolder.set("Directly return. Reason: ConditionRouter disabled.");
+            }
+            return invokers;
+        }
+
+        if (CollectionUtils.isEmpty(invokers)) {
+            if (needToPrintMessage) {
+                messageHolder.set("Directly return. Reason: Invokers from previous router is empty.");
+            }
+            return invokers;
+        }
+        try {
+	    // 消费者匹配条件进行匹配
+            if (!matchWhen(url, invocation)) {
+                if (needToPrintMessage) {
+                    messageHolder.set("Directly return. Reason: WhenCondition not match.");
+                }
+                return invokers;
+            }
+	    // 提供者匹配过滤条件为空，则直接返回（相当于黑名单）
+            if (thenCondition == null) {
+                logger.warn("2-6","condition state router thenCondition is empt","","The current consumer in the service blacklist. consumer: " + NetUtils.getLocalHost() + ", service: " + url.getServiceKey());                if (needToPrintMessage) {
+                    messageHolder.set("Empty return. Reason: ThenCondition is empty.");
+                }
+                return BitList.emptyList();
+            }
+            BitList<Invoker<T>> result = invokers.clone();
+	    // 移除提供者匹配条件未命中的
+            result.removeIf(invoker -> !matchThen(invoker.getUrl(), url));
+
+            if (!result.isEmpty()) {
+                if (needToPrintMessage) {
+                    messageHolder.set("Match return.");
+                }
+                return result;
+            } else if (this.isForce()) { // 是否指定强制返回 空结果
+                logger.warn("2-6","execute condition state router result list is empty. and force=true","","The route result is empty and force execute. consumer: " + NetUtils.getLocalHost() + ", service: " + url.getServiceKey() + ", router: " + url.getParameterAndDecoded(RULE_KEY));
+                if (needToPrintMessage) {
+                    messageHolder.set("Empty return. Reason: Empty result from condition and condition is force.");
+                }
+                return result;
+            }
+        } catch (Throwable t) {
+            logger.error("2-7","execute condition state router exception","","Failed to execute condition router rule: " + getUrl() + ", invokers: " + invokers + ", cause: " + t.getMessage(),t);
+        }
+        if (needToPrintMessage) {
+            messageHolder.set("Directly return. Reason: Error occurred ( or result is empty ).");
+        }
+	// 返回原始invoker列表
+        return invokers;
+    }
+```
 #### Mesh
