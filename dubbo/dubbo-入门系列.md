@@ -419,13 +419,101 @@ public Result doInvoke(final Invocation invocation, List<Invoker<T>> invokers, L
 ## 路由选址
 
 ### 概念介绍
+> 路由是在发起一次RPC调用前起到过滤目标服务器地址的作用，过滤后的地址列表，将作为消费端最终发起RPC调用的备选地址。再经过负载均衡等挑选对应`invoker`。
 
 | 名称  | 说明  |
 | --- | --- |
-| Tag | Tag |
-| Condition | Condition |
-| Mesh | Mesh |
+| Tag | 通过标签将某一个或多个服务的提供者划分到同一个分组，约束流量只在指定分组中流转|
+| Condition | 通过条件关系将某一个或多个服务的提供者划分到同一个分组，约束流量只在指定分组中流转|
+| Mesh |  |
 
 #### Tag  
+> `Tag`通过标签将服务分组，功能又简单实用，常用于流量隔离，可用于灰度、蓝绿。
+
+代码部分： `org.apache.dubbo.rpc.cluster.router.tag.TagStateRouter`
+```java
+public BitList<Invoker<T>> doRoute(BitList<Invoker<T>> invokers, URL url, Invocation invocation, boolean needToPrintMessage, Holder<RouterSnapshotNode<T>> nodeHolder, Holder<String> messageHolder) throws RpcException {
+        if (CollectionUtils.isEmpty(invokers)) {
+            if (needToPrintMessage) {
+                messageHolder.set("Directly Return. Reason: Invokers from previous router is empty.");
+            }
+            return invokers;
+        }
+
+        // 复制tag路由规则（可由配置中心配置）
+        final TagRouterRule tagRouterRuleCopy = tagRouterRule;
+        if (tagRouterRuleCopy == null || !tagRouterRuleCopy.isValid() || !tagRouterRuleCopy.isEnabled()) {
+            if (needToPrintMessage) {
+                messageHolder.set("Disable Tag Router. Reason: tagRouterRule is invalid or disabled");
+            }
+	    // 采用URL中静态配置Tag进行匹配
+            return filterUsingStaticTag(invokers, url, invocation);
+        }
+
+        BitList<Invoker<T>> result = invokers;
+	// 获取tag值
+        String tag = StringUtils.isEmpty(invocation.getAttachment(TAG_KEY)) ? url.getParameter(TAG_KEY) :
+            invocation.getAttachment(TAG_KEY);
+
+        if (StringUtils.isNotEmpty(tag)) {
+	    // 通过路由配置规则获取服务地址
+            List<String> addresses = tagRouterRuleCopy.getTagnameToAddresses().get(tag);
+            if (CollectionUtils.isNotEmpty(addresses)) {
+	        // 过滤地址
+                result = filterInvoker(invokers, invoker -> addressMatches(invoker.getUrl(), addresses));
+                // if result is not null OR it's null but force=true, return result directly
+                if (CollectionUtils.isNotEmpty(result) || tagRouterRuleCopy.isForce()) {
+                    if (needToPrintMessage) {
+                        messageHolder.set("Use tag " + tag + " to route. Reason: result is not null OR it's null but force=true");
+                    }
+                    return result;
+                }
+            } else {
+                // 配置地址为空 则采用静态 Tag过滤
+                result = filterInvoker(invokers, invoker -> tag.equals(invoker.getUrl().getParameter(TAG_KEY)));
+            }
+            // 
+            if (CollectionUtils.isNotEmpty(result) || isForceUseTag(invocation)) {
+                if (needToPrintMessage) {
+                    messageHolder.set("Use tag " + tag + " to route. Reason: result is not empty or ForceUseTag key is true in invocation");
+                }
+                return result;
+            }
+            // FAILOVER: return all Providers without any tags.
+            else {
+                BitList<Invoker<T>> tmp = filterInvoker(invokers, invoker -> addressNotMatches(invoker.getUrl(),
+                    tagRouterRuleCopy.getAddresses()));
+                if (needToPrintMessage) {
+                    messageHolder.set("FAILOVER: return all Providers without any tags");
+                }
+                return filterInvoker(tmp, invoker -> StringUtils.isEmpty(invoker.getUrl().getParameter(TAG_KEY)));
+            }
+        } else {
+            // List<String> addresses = tagRouterRule.filter(providerApp);
+            // return all addresses in dynamic tag group.
+            List<String> addresses = tagRouterRuleCopy.getAddresses();
+            if (CollectionUtils.isNotEmpty(addresses)) {
+                result = filterInvoker(invokers, invoker -> addressNotMatches(invoker.getUrl(), addresses));
+                // 1. all addresses are in dynamic tag group, return empty list.
+                if (CollectionUtils.isEmpty(result)) {
+                    if (needToPrintMessage) {
+                        messageHolder.set("all addresses are in dynamic tag group, return empty list");
+                    }
+                    return result;
+                }
+                // 2. if there are some addresses that are not in any dynamic tag group, continue to filter using the
+                // static tag group.
+            }
+            if (needToPrintMessage) {
+                messageHolder.set("filter using the static tag group");
+            }
+            return filterInvoker(result, invoker -> {
+                String localTag = invoker.getUrl().getParameter(TAG_KEY);
+                return StringUtils.isEmpty(localTag) || !tagRouterRuleCopy.getTagNames().contains(localTag);
+            });
+        }
+    }
+```
+
 #### Condition  
 #### Mesh
