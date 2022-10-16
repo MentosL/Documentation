@@ -347,11 +347,72 @@ public Result doInvoke(Invocation invocation, List<Invoker<T>> invokers, LoadBal
 
 
 #### Broadcast  
-> 
+> 执行指定阈值内全量调用（如阈值为100%，则调用所有`invoker`去拿结果）
 
-代码部分：
-java
+代码部分： `org.apache.dubbo.rpc.cluster.support.BroadcastClusterInvoker`
+```java
+public Result doInvoke(final Invocation invocation, List<Invoker<T>> invokers, LoadBalance loadbalance) throws RpcException {
+        checkInvokers(invokers, invocation);
+        RpcContext.getServiceContext().setInvokers((List) invokers);
+        RpcException exception = null;
+        Result result = null;
+        URL url = getUrl();
+        // The value range of broadcast.fail.threshold must be 0～100.
+        // 100 means that an exception will be thrown last, and 0 means that as long as an exception occurs, it will be thrown.
+        int broadcastFailPercent = url.getParameter(BROADCAST_FAIL_PERCENT_KEY, MAX_BROADCAST_FAIL_PERCENT);
 
+        if (broadcastFailPercent < MIN_BROADCAST_FAIL_PERCENT || broadcastFailPercent > MAX_BROADCAST_FAIL_PERCENT) {
+            logger.info(String.format("The value corresponding to the broadcast.fail.percent parameter must be between 0 and 100. " +
+                    "The current setting is %s, which is reset to 100.", broadcastFailPercent));
+            broadcastFailPercent = MAX_BROADCAST_FAIL_PERCENT;
+        }
+
+        int failThresholdIndex = invokers.size() * broadcastFailPercent / MAX_BROADCAST_FAIL_PERCENT;
+        int failIndex = 0;
+        for (Invoker<T> invoker : invokers) {
+            try {
+                RpcInvocation subInvocation = new RpcInvocation(invocation, invoker);
+                subInvocation.setAttachment(ASYNC_KEY, "true");
+		// 执行调用
+                result = invokeWithContext(invoker, subInvocation);
+                if (null != result && result.hasException()) {
+                    Throwable resultException = result.getException();
+                    if (null != resultException) {
+                        exception = getRpcException(result.getException());
+                        logger.warn(exception.getMessage(), exception);
+                        failIndex++; // 失败次数增加
+                        if (failIndex == failThresholdIndex) {
+                            break;
+                        }
+                    }
+                }
+            } catch (Throwable e) {
+                exception = getRpcException(e);
+                logger.warn(exception.getMessage(), exception);
+                failIndex++;
+                if (failIndex == failThresholdIndex) {
+                    break;
+                }
+            }
+        }
+        if (exception != null) { // 输出日志
+            if (failIndex == failThresholdIndex) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug(
+                        String.format("The number of BroadcastCluster call failures has reached the threshold %s", failThresholdIndex));
+
+                }
+            } else {
+                if (logger.isDebugEnabled()) {
+                    logger.debug(String.format("The number of BroadcastCluster call failures has not reached the threshold %s, fail size is %s",
+                        failThresholdIndex, failIndex));
+                }
+            }
+            throw exception;
+        }
+        return result;
+    }
+```
 
 #### Demo
 
